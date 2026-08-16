@@ -399,6 +399,30 @@ padding-bottom: 0;
   .theme-toggle-row { display:flex; gap:8px; }
   .theme-toggle-row button { flex:1; font-family:inherit; font-size:13px; padding:9px 8px; border-radius:10px; border:1px solid var(--border); background:transparent; color:var(--text-secondary); cursor:pointer; }
   .theme-toggle-row button.active { background: var(--series-1); color:#fff; border-color:var(--series-1); }
+
+
+  /* ---- V2: Stabilität, iPhone-Safe-Area & Fortschritts-Karten ---- */
+  html { min-height: 100%; background: var(--surface-page); }
+  body { min-height: 100dvh; overscroll-behavior-y: none; }
+  button, input, select, textarea, .day-picker-btn, .exercise-jump-chip { touch-action: manipulation; }
+  nav.tabbar {
+    transform: translateZ(0);
+    -webkit-transform: translateZ(0);
+  }
+  .metric-grid { display:grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap:8px; margin-top:10px; }
+  .metric-box { background:var(--surface-page); border:1px solid var(--border); border-radius:11px; padding:10px; }
+  .metric-box .metric-label { font-size:10.5px; color:var(--text-muted); margin-bottom:2px; }
+  .metric-box .metric-value { font-size:17px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .pr-badge { display:inline-flex; align-items:center; gap:4px; background:rgba(250,178,25,.15); border:1px solid rgba(250,178,25,.45); color:var(--text-primary); border-radius:100px; padding:4px 9px; font-size:11.5px; font-weight:700; }
+  .trend-positive { color:var(--good); }
+  .trend-negative { color:var(--critical); }
+  .trend-neutral { color:var(--text-secondary); }
+  @media (max-width: 420px) {
+    .grid-3 { grid-template-columns:1fr; }
+    .grid-4 { grid-template-columns:1fr 1fr; }
+    .app { padding-left:12px; padding-right:12px; }
+  }
+
 </style>
 </head>
 <body>
@@ -490,6 +514,11 @@ padding-bottom: 0;
       </div>
     </div>
 
+    <div class="card" id="weight-summary-card">
+      <div class="section-title-row"><h2>Fortschritt</h2></div>
+      <div id="weight-summary"></div>
+    </div>
+
     <div class="card">
       <div class="section-title-row"><h2>Verlauf</h2></div>
       <div class="range-toggle" id="weight-range-toggle"></div>
@@ -523,6 +552,7 @@ padding-bottom: 0;
         <button class="btn secondary small" onclick="quickAddPreset('quarkShake')">+ Quark-Shake (12:30)</button>
         <button class="btn secondary small" onclick="quickAddPreset('bananaHoney')">+ Banane + Honig (17:00)</button>
         <button class="btn secondary small" onclick="quickFillMealTemplate('Hauptmahlzeit')">+ Hauptmahlzeit (Makros eintragen)</button>
+        <button class="btn secondary small" onclick="copyPreviousNutritionDay()">⧉ Vortag kopieren</button>
         <button class="btn secondary small" onclick="startMealPhotoFlow()">📷 Mahlzeit fotografieren</button>
       </div>
       <small class="hint" style="margin-top:6px">Für die Foto-Erkennung wird das Bild an einen externen KI-Dienst gesendet.</small>
@@ -959,7 +989,14 @@ function migrateWorkouts(workouts) {
 }
 
 function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    return true;
+  } catch (e) {
+    console.error('Konnte Daten nicht speichern', e);
+    toast('Speichern fehlgeschlagen. Bitte Daten-Backup exportieren und freien Speicher prüfen.');
+    return false;
+  }
 }
 
 /* ============================================================
@@ -1031,7 +1068,10 @@ function showView(name) {
   if (name==='dashboard') renderDashboard();
   if (name==='weight') renderWeightView();
   if (name==='nutrition') renderNutritionView();
-  if (name==='training') renderTrainingView();
+  if (name==='training') {
+    if (!trainingFlow.dayId && !trainingFlow.completed) trainingFlow.date = todayISO();
+    renderTrainingView();
+  }
   if (name==='log') renderLogView();
   if (name==='settings') renderSettingsView();
 }
@@ -1564,12 +1604,14 @@ function renderWeightView() {
 
   const sorted = state.weightEntries.slice().sort((a,b)=> a.date.localeCompare(b.date));
   const filtered = filterByRange(sorted, 'date', weightRange);
-  const pts = filtered.map(e=>({x:new Date(e.date), y:e.weight}));
+  const pts = filtered.map(e=>({x:parseISODateLocal(e.date), y:e.weight}));
   const trend = pts.length>=3 ? movingAverage(pts,7) : [];
   renderLineChart(document.getElementById('weight-chart'), [
     { points: pts, color:'var(--series-1)', label:'kg' },
     { points: trend, color:'var(--series-2)', dashed:true, noMarkers:true, label:'Trend' }
   ], { yFormat: v=>round1(v)+' kg', emptyText:'Noch keine Gewichtseinträge.' });
+
+  renderWeightSummary(sorted);
 
   const tableDiv = document.getElementById('weight-table');
   if (!sorted.length) {
@@ -1584,6 +1626,29 @@ function renderWeightView() {
   });
   html += '</table>';
   tableDiv.innerHTML = html;
+}
+
+function renderWeightSummary(sorted) {
+  const el = document.getElementById('weight-summary');
+  if (!el) return;
+  if (!sorted.length) {
+    el.innerHTML = '<div class="empty-state">Nach dem ersten Gewichtseintrag erscheinen hier deine wichtigsten Trends.</div>';
+    return;
+  }
+  const latest = sorted[sorted.length-1];
+  const last7 = sorted.slice(-7);
+  const avg7 = last7.reduce((sum,e)=>sum+Number(e.weight||0),0) / last7.length;
+  const cutoff30 = parseISODateLocal(latest.date); cutoff30.setDate(cutoff30.getDate()-30);
+  const older = sorted.filter(e=>parseISODateLocal(e.date)<=cutoff30).slice(-1)[0] || sorted[0];
+  const change30 = round1(latest.weight - older.weight);
+  const goal = state.settings.goalWeight;
+  const goalText = goal ? `${round1(latest.weight-goal)} kg` : '–';
+  el.innerHTML = `<div class="metric-grid">
+    <div class="metric-box"><div class="metric-label">Aktuell</div><div class="metric-value">${round1(latest.weight)} kg</div></div>
+    <div class="metric-box"><div class="metric-label">Ø letzte ${last7.length} Einträge</div><div class="metric-value">${round1(avg7)} kg</div></div>
+    <div class="metric-box"><div class="metric-label">Veränderung ~30 Tage</div><div class="metric-value ${change30<0?'trend-positive':change30>0?'trend-negative':'trend-neutral'}">${change30>0?'+':''}${change30} kg</div></div>
+    <div class="metric-box"><div class="metric-label">Abstand zum Ziel</div><div class="metric-value">${goalText}</div></div>
+  </div>`;
 }
 
 function saveWeightEntry() {
@@ -1705,6 +1770,23 @@ function quickFillMealTemplate(name) {
   kcalInput.focus();
   kcalInput.scrollIntoView({ behavior:'smooth', block:'center' });
   toast('Bitte Makros für die Hauptmahlzeit eintragen.');
+}
+
+function copyPreviousNutritionDay() {
+  const date = currentNutritionDate();
+  const d = parseISODateLocal(date);
+  d.setDate(d.getDate()-1);
+  const prevIso = dateToISO(d);
+  const prev = state.nutritionDays[prevIso];
+  if (!prev || !prev.meals || !prev.meals.length) { toast('Am Vortag sind keine Mahlzeiten gespeichert.'); return; }
+  if (state.nutritionDays[date] && state.nutritionDays[date].meals && state.nutritionDays[date].meals.length) {
+    if (!confirm('Für diesen Tag gibt es bereits Mahlzeiten. Vortag zusätzlich kopieren?')) return;
+  }
+  if (!state.nutritionDays[date]) state.nutritionDays[date] = { meals: [] };
+  prev.meals.forEach(m=>state.nutritionDays[date].meals.push(Object.assign({}, m, { id:uid() })));
+  saveState();
+  toast(`${prev.meals.length} Mahlzeit(en) vom Vortag kopiert.`);
+  renderNutritionView();
 }
 
 function deleteMeal(date, id) {
@@ -2695,6 +2777,27 @@ function adjustStepper(kind, delta) {
   input.value = v;
 }
 
+function getPreviousExerciseBests(exId, substituteName, currentWorkout) {
+  const sets = [];
+  const history = substituteName ? getSubstituteHistory(substituteName, currentWorkout ? currentWorkout.id : null) : getExerciseHistory(exId, currentWorkout ? currentWorkout.id : null);
+  history.forEach(h=>sets.push(...h.sets));
+  const currentData = currentWorkout && currentWorkout.exercises && currentWorkout.exercises[exId];
+  if (currentData && (currentData.substituteName||null) === (substituteName||null)) sets.push(...(currentData.sets||[]));
+  return {
+    maxWeight: sets.length ? Math.max(...sets.map(s=>Number(s.weight)||0)) : null,
+    best1RM: sets.length ? Math.max(...sets.map(epley1RM).filter(v=>v!=null)) : null
+  };
+}
+
+function getSetPRMessage(previous, newSet) {
+  const msgs = [];
+  const oneRm = epley1RM(newSet);
+  if (previous.maxWeight != null && Number(newSet.weight) > previous.maxWeight) msgs.push(`Gewichts-PR ${newSet.weight} kg`);
+  if (previous.best1RM != null && oneRm != null && oneRm > previous.best1RM + 0.05) msgs.push(`1RM-PR ~${round1(oneRm)} kg`);
+  if (previous.maxWeight == null && previous.best1RM == null) return ''; // erste Session nicht als PR feiern
+  return msgs.length ? `🏆 Neuer ${msgs.join(' · ')}` : '';
+}
+
 function saveCurrentSet() {
   const exDef = currentExerciseDef();
   const exId = exDef.id;
@@ -2715,6 +2818,8 @@ function saveCurrentSet() {
     newSet = { weight, reps };
   }
 
+  const existingWorkout = getCurrentWorkoutReadOnly();
+  const previousBests = getPreviousExerciseBests(exId, substituteName, existingWorkout);
   const workout = getOrCreateCurrentWorkout();
   if (!workout.exercises[exId] || (workout.exercises[exId].substituteName||null) !== substituteName) {
     workout.exercises[exId] = { sets: [] };
@@ -2735,7 +2840,8 @@ function saveCurrentSet() {
 
   workout.exercises[exId].sets.push(newSet);
   saveState();
-  toast(`Satz ${workout.exercises[exId].sets.length} gespeichert.`);
+  const prMessage = getSetPRMessage(previousBests, newSet);
+  toast(prMessage || `Satz ${workout.exercises[exId].sets.length} gespeichert.`);
   startRestTimer(exDef);
 
   const planned = getPlannedSets(exId);
@@ -3021,6 +3127,7 @@ function showExerciseHistoryModal(exId, substituteName) {
     </div>
     ${substituteName ? `<small class="hint" style="margin-top:-6px;margin-bottom:10px">Ersatz-Übung für ${exDef.name}</small>` : ''}
     ${imbalance ? `<div class="suggestion-box warn-box"><div class="note">⚖️ Seite ${imbalance.weakerSide} schafft im Schnitt seit mehreren Sessions ca. ${imbalance.pct}% weniger Wdh. als die andere Seite.</div></div>` : ''}
+    <div id="history-modal-summary"></div>
     <div class="card" style="padding-bottom:10px">
       <h3 style="margin-top:0">Gewicht pro Session</h3>
       <div class="chart-wrap" id="history-modal-weight-chart"></div>
@@ -3048,6 +3155,23 @@ function showExerciseHistoryModal(exId, substituteName) {
     </div>
   `;
   overlay.style.display = 'flex';
+
+  const summaryDiv = document.getElementById('history-modal-summary');
+  if (history.length) {
+    const bestWeight = Math.max(...history.map(h=>setsMaxWeight(h.sets)));
+    const best1RM = Math.max(...history.map(h=>sessionBest1RM(h.sets) || 0));
+    const latest = history[history.length-1];
+    const first = history[0];
+    const first1 = sessionBest1RM(first.sets);
+    const last1 = sessionBest1RM(latest.sets);
+    const trendPct = first1 && last1 ? Math.round(((last1-first1)/first1)*100) : 0;
+    summaryDiv.innerHTML = `<div class="metric-grid" style="margin:0 0 12px">
+      <div class="metric-box"><div class="metric-label">Sessions</div><div class="metric-value">${history.length}</div></div>
+      <div class="metric-box"><div class="metric-label">Bestgewicht</div><div class="metric-value">${round1(bestWeight)} kg</div></div>
+      <div class="metric-box"><div class="metric-label">Bestes gesch. 1RM</div><div class="metric-value">${round1(best1RM)} kg</div></div>
+      <div class="metric-box"><div class="metric-label">1RM seit erster Session</div><div class="metric-value ${trendPct>0?'trend-positive':trendPct<0?'trend-negative':'trend-neutral'}">${trendPct>0?'+':''}${trendPct}%</div></div>
+    </div>`;
+  } else summaryDiv.innerHTML = '';
 
   const weightPts = history.map(h=>({ x: parseISODateLocal(h.date), y: setsMaxWeight(h.sets) }));
   const volumePts = history.map(h=>({ x: parseISODateLocal(h.date), y: setsVolume(h.sets) }));
@@ -3285,9 +3409,9 @@ function downloadCSV(filename, rows) {
 function exportCSV() {
   const dateStr = todayISO();
 
-  const weightRows = [['Datum','Gewicht (kg)','Koerperfett (%)','Bauchumfang (cm)']];
+  const weightRows = [['Datum','Gewicht (kg)','Armumfang (cm)','Bauchumfang (cm)']];
   state.weightEntries.slice().sort((a,b)=>a.date.localeCompare(b.date)).forEach(e=>{
-    weightRows.push([e.date, e.weight, e.bodyfat ?? '', e.waist ?? '']);
+    weightRows.push([e.date, e.weight, e.arm ?? '', e.waist ?? '']);
   });
 
   const nutritionRows = [['Datum','Mahlzeit','kcal','Protein (g)','Fett (g)','KH (g)']];
@@ -3333,8 +3457,16 @@ function importData(event) {
     try {
       const imported = JSON.parse(reader.result);
       if (!imported.settings || !imported.weightEntries) throw new Error('Ungültiges Format');
-      imported.workouts = migrateWorkouts(imported.workouts || []);
-      state = imported;
+      state = {
+        settings: Object.assign({}, DEFAULT_STATE.settings, imported.settings || {}, {
+          targets: Object.assign({}, DEFAULT_STATE.settings.targets, (imported.settings||{}).targets),
+          tdeeCalibration: Object.assign({}, DEFAULT_STATE.settings.tdeeCalibration, (imported.settings||{}).tdeeCalibration)
+        }),
+        weightEntries: Array.isArray(imported.weightEntries) ? imported.weightEntries : [],
+        nutritionDays: imported.nutritionDays || {},
+        workouts: migrateWorkouts(imported.workouts || []),
+        foodDatabase: imported.foodDatabase || {}
+      };
       saveState();
       toast('Import erfolgreich.');
       applyTheme();
