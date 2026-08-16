@@ -2916,19 +2916,21 @@ function renderLogView() {
     exFilter.innerHTML = '<option value="">Alle Übungen</option>' + allExercises.map(ex=>`<option value="${ex.id}">${ex.name}</option>`).join('');
     exFilter.dataset.built = '1';
     exFilter.onchange = renderLogView;
+    }
     if (!dateFilter.dataset.built) {
   dateFilter.dataset.built = '1';
   dateFilter.onchange = renderLogView;
 }
 
-  const dayVal = dayFilter.value;
-  const exVal = exFilter.value;
+ const dayVal = dayFilter.value;
+const exVal = exFilter.value;
+const dateVal = dateFilter.value;
 
-  let workouts = state.workouts.slice().sort((a,b)=> b.date.localeCompare(a.date));
-  if (dayVal) workouts = workouts.filter(w=>w.dayId===dayVal);
-  if (exVal) workouts = workouts.filter(w=> w.exercises && w.exercises[exVal]);
-    const dateVal = dateFilter.value;
-  if (dateVal) workouts = workouts.filter(w=>w.date===dateVal);
+let workouts = state.workouts.slice().sort((a,b)=> b.date.localeCompare(a.date));
+
+if (dayVal) workouts = workouts.filter(w=>w.dayId===dayVal);
+if (exVal) workouts = workouts.filter(w=>w.exercises && w.exercises[exVal]);
+if (dateVal) workouts = workouts.filter(w=>w.date===dateVal);
 
   const listDiv = document.getElementById('log-list');
   if (!workouts.length) {
