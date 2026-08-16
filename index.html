@@ -176,6 +176,7 @@ padding: 60px 16px 8px;
   button.btn.danger { background: transparent; color: var(--critical); border-color: var(--critical); }
   button.btn.small { padding: 6px 10px; font-size: 12.5px; }
   button.btn:disabled { opacity:.5; cursor:default; }
+  button, .food-suggestion-item { touch-action: manipulation; }
   .btn-row { display:flex; gap:8px; margin-top: 12px; flex-wrap: wrap; }
 
   .pill { display:inline-flex; align-items:center; gap:4px; font-size:11.5px; padding: 3px 9px; border-radius: 100px; background: var(--surface-page); color: var(--text-secondary); border: 1px solid var(--border); }
@@ -892,7 +893,7 @@ const DEFAULT_STATE = {
       pendingSuggestion: null   // {computedAt, periodStart, periodEnd, daysElapsed, theoreticalLossKg, actualLossKg, deviationPct, assumedDeficit, estimatedTDEE, suggestedKcal}
     }
   },
-  weightEntries: [],      // {date, weight, bodyfat, waist}
+  weightEntries: [],      // {date, weight, waist, arm}
   nutritionDays: {},      // date -> { meals: [{id,name,kcal,protein,fat,carbs}] }
   workouts: [],           // {id, date, dayId, exercises: { exId: {sets:[{weight,reps} | {weight,repsLeft,repsRight}], substituteName?} } }
   // Lokale Nährwert-Datenbank (pro 100g), wächst automatisch durch Gramm-Eingaben und Barcode-Scans.
@@ -965,7 +966,17 @@ function saveState() {
    HELPERS
    ============================================================ */
 
-function todayISO() { return new Date().toISOString().slice(0,10); }
+function dateToISO(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth()+1).padStart(2,'0');
+  const d = String(date.getDate()).padStart(2,'0');
+  return `${y}-${m}-${d}`;
+}
+function parseISODateLocal(iso) {
+  const [y,m,d] = String(iso).split('-').map(Number);
+  return new Date(y, (m||1)-1, d||1);
+}
+function todayISO() { return dateToISO(new Date()); }
 function fmtDateDE(iso) {
   const [y,m,d] = iso.split('-');
   return `${d}.${m}.${y}`;
@@ -1012,8 +1023,10 @@ function dayTotalsForDate(iso) {
    ============================================================ */
 
 function showView(name) {
+  const target = document.getElementById('view-'+name);
+  if (!target) return;
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
-  document.getElementById('view-'+name).classList.add('active');
+  target.classList.add('active');
   document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active', b.dataset.view===name));
   if (name==='dashboard') renderDashboard();
   if (name==='weight') renderWeightView();
@@ -1215,7 +1228,7 @@ function filterByRange(entries, dateKey, range) {
   if (range === 'all') return entries;
   const days = parseInt(range,10);
   const cutoff = Date.now() - days*86400000;
-  return entries.filter(e => new Date(e[dateKey]).getTime() >= cutoff);
+  return entries.filter(e => parseISODateLocal(e[dateKey]).getTime() >= cutoff);
 }
 
 /* ============================================================
@@ -1256,7 +1269,7 @@ function renderDashboard() {
 
   // training this week
   const monday = getMonday(new Date());
-  const doneThisWeek = state.workouts.filter(w => new Date(w.date) >= monday).length;
+  const doneThisWeek = state.workouts.filter(w => parseISODateLocal(w.date) >= monday).length;
   const target = state.settings.weeklyTrainingTarget || 4;
   document.getElementById('dash-training').innerHTML = `${doneThisWeek} <small>/ ${target} Einheiten</small>`;
   const nextDay = getNextRecommendedDay();
@@ -1266,7 +1279,7 @@ function renderDashboard() {
 
   buildRangeToggle(document.getElementById('dash-range-toggle'), dashRange, (v)=>{ dashRange = v; renderDashboard(); });
   const filtered = filterByRange(sorted, 'date', dashRange);
-  const pts = filtered.map(e => ({x:new Date(e.date), y:e.weight}));
+  const pts = filtered.map(e => ({x:parseISODateLocal(e.date), y:e.weight}));
   const trend = pts.length>=3 ? movingAverage(pts,7) : [];
   renderLineChart(document.getElementById('dash-weight-chart'), [
     { points: pts, color:'var(--series-1)', label:'kg' },
@@ -1317,7 +1330,7 @@ function checkTdeeCalibration() {
 
   const intervalDays = Math.round((cal.intervalWeeks || 2.5) * 7);
   const todayIso = todayISO();
-  const daysElapsed = Math.floor((new Date(todayIso) - new Date(cal.periodStartDate)) / 86400000);
+  const daysElapsed = Math.floor((parseISODateLocal(todayIso) - parseISODateLocal(cal.periodStartDate)) / 86400000);
   if (daysElapsed < intervalDays) return null;
 
   const assumedDeficit = (state.settings.estimatedTDEE || (state.settings.targets.kcal + 500)) - state.settings.targets.kcal;
@@ -1333,11 +1346,11 @@ function checkTdeeCalibration() {
   // Periodenbeginn/-ende. Mindestens 7 Gewichtseinträge nötig für eine sinnvolle Trendlinie.
   const sorted = state.weightEntries.slice().sort((a,b)=>a.date.localeCompare(b.date));
   if (sorted.length < 7) return null;
-  const pts = sorted.map(e=>({x:new Date(e.date), y:e.weight}));
+  const pts = sorted.map(e=>({x:parseISODateLocal(e.date), y:e.weight}));
   const trend = movingAverage(pts, 7);
   const nearest = (t) => trend.reduce((best,p)=> Math.abs(p.x.getTime()-t) < Math.abs(best.x.getTime()-t) ? p : best, trend[0]);
-  const startTarget = new Date(cal.periodStartDate).getTime();
-  const endTarget = new Date(todayIso).getTime();
+  const startTarget = parseISODateLocal(cal.periodStartDate).getTime();
+  const endTarget = parseISODateLocal(todayIso).getTime();
   const trendStart = nearest(startTarget);
   const trendEnd = nearest(endTarget);
   // Trendpunkte müssen einigermaßen nah an den Periodengrenzen liegen (max. 4 Tage), sonst ist die
@@ -1423,7 +1436,7 @@ function computeMainLift1RMTrend() {
     });
   });
   return Object.entries(byDate)
-    .map(([date, vals])=> ({ x: new Date(date), y: vals.reduce((a,b)=>a+b,0)/vals.length }))
+    .map(([date, vals])=> ({ x: parseISODateLocal(date), y: vals.reduce((a,b)=>a+b,0)/vals.length }))
     .sort((a,b)=>a.x-b.x);
 }
 
@@ -1473,7 +1486,7 @@ function renderPlateauOverview() {
 function computeMuscleGroupVolume(sinceDate) {
   const counts = {};
   state.workouts.forEach(w=>{
-    if (new Date(w.date) < sinceDate) return;
+    if (parseISODateLocal(w.date) < sinceDate) return;
     const day = DAY_DEFS[w.dayId];
     if (!day || !w.exercises) return;
     Object.entries(w.exercises).forEach(([exId, data])=>{
@@ -1625,7 +1638,7 @@ function renderNutritionView() {
     mealsDiv.innerHTML = dayData.meals.map(m => `
       <div class="meal-item">
         <div>
-          <div>${m.name}</div>
+          <div>${escapeHTML(m.name)}</div>
           <div class="m-macros">${Math.round(m.kcal)} kcal · P ${m.protein}g · F ${m.fat}g · KH ${m.carbs}g</div>
         </div>
         <button class="btn ghost small" onclick="deleteMeal('${date}','${m.id}')">✕</button>
@@ -1633,10 +1646,10 @@ function renderNutritionView() {
   }
 
   // week average
-  const monday = getMonday(new Date(date));
+  const monday = getMonday(parseISODateLocal(date));
   const weekDates = Array.from({length:7}, (_,i)=>{
     const d = new Date(monday); d.setDate(d.getDate()+i);
-    return d.toISOString().slice(0,10);
+    return dateToISO(d);
   });
   const weekTotals = weekDates.map(dayTotalsForDate).filter(t=>t.hasData);
   const avgDiv = document.getElementById('nutrition-week-avg');
@@ -1879,6 +1892,14 @@ function normalizeFoodKey(name) { return name.trim().toLowerCase(); }
 function escAttr(str) {
   return String(str).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
 }
+function escapeHTML(str) {
+  return String(str ?? '')
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;')
+    .replace(/'/g,'&#39;');
+}
 
 function searchLocalFoodDatabase(query) {
   const q = query.toLowerCase();
@@ -1934,7 +1955,7 @@ function renderFoodSuggestions(results, query, opts) {
   foodSearchState.currentResults = results;
   let html = results.map((f,i)=> `
     <div class="food-suggestion-item" onclick="selectFoodSuggestion(${i})">
-      <div><div class="fs-name">${f.name}</div><div class="fs-meta">${Math.round(f.kcal100)} kcal/100g · ${sourceLabel[f.source]||f.source}</div></div>
+      <div><div class="fs-name">${escapeHTML(f.name)}</div><div class="fs-meta">${Math.round(f.kcal100)} kcal/100g · ${escapeHTML(sourceLabel[f.source]||f.source)}</div></div>
       <span class="pill">Wählen</span>
     </div>`).join('');
   if (opts.showOnlineSearchLink) {
@@ -1951,8 +1972,8 @@ function selectFoodSuggestion(i) {
   document.getElementById('food-suggestions').innerHTML = '';
   const sourceLabel = { user:'Gespeichert', openfoodfacts:'Open Food Facts', ai:'KI-Schätzung (kein exakter Wert)' };
   document.getElementById('food-selected-info').innerHTML = `<div class="food-selected-card">
-    <strong>${f.name}</strong> – pro 100g: ${Math.round(f.kcal100)} kcal · P ${round1(f.protein100)}g · F ${round1(f.fat100)}g · KH ${round1(f.carbs100)}g
-    <br><small class="hint" style="margin:2px 0 0">Quelle: ${sourceLabel[f.source]||f.source}</small>
+    <strong>${escapeHTML(f.name)}</strong> – pro 100g: ${Math.round(f.kcal100)} kcal · P ${round1(f.protein100)}g · F ${round1(f.fat100)}g · KH ${round1(f.carbs100)}g
+    <br><small class="hint" style="margin:2px 0 0">Quelle: ${escapeHTML(sourceLabel[f.source]||f.source)}</small>
   </div>`;
   document.getElementById('food-grams').focus();
 }
@@ -2161,7 +2182,7 @@ function renderBarcodeProductResult(product) {
   const body = document.getElementById('barcode-scanner-body');
   body.innerHTML = `
     <div class="food-selected-card">
-      <strong>${product.name}</strong> – pro 100g: ${Math.round(product.kcal100)} kcal · P ${round1(product.protein100)}g · F ${round1(product.fat100)}g · KH ${round1(product.carbs100)}g
+      <strong>${escapeHTML(product.name)}</strong> – pro 100g: ${Math.round(product.kcal100)} kcal · P ${round1(product.protein100)}g · F ${round1(product.fat100)}g · KH ${round1(product.carbs100)}g
       <br><small class="hint" style="margin:2px 0 0">Quelle: Open Food Facts${product.servingGrams ? ' · Portion lt. Verpackung: ' + product.servingGrams + 'g' : ''}</small>
     </div>
     <div class="grid-2">
@@ -3028,9 +3049,9 @@ function showExerciseHistoryModal(exId, substituteName) {
   `;
   overlay.style.display = 'flex';
 
-  const weightPts = history.map(h=>({ x: new Date(h.date), y: setsMaxWeight(h.sets) }));
-  const volumePts = history.map(h=>({ x: new Date(h.date), y: setsVolume(h.sets) }));
-  const oneRmPts = history.map(h=>({ x: new Date(h.date), y: sessionBest1RM(h.sets) })).filter(p=>p.y!=null);
+  const weightPts = history.map(h=>({ x: parseISODateLocal(h.date), y: setsMaxWeight(h.sets) }));
+  const volumePts = history.map(h=>({ x: parseISODateLocal(h.date), y: setsVolume(h.sets) }));
+  const oneRmPts = history.map(h=>({ x: parseISODateLocal(h.date), y: sessionBest1RM(h.sets) })).filter(p=>p.y!=null);
 
   renderLineChart(document.getElementById('history-modal-weight-chart'),
     [{ points: weightPts, color:'var(--series-1)', label:'kg' }],
